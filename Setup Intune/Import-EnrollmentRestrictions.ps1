@@ -1,381 +1,331 @@
-﻿##
-## This is slightly modified from Microsoft Graph scripts located at:
-## https://github.com/microsoftgraph/powershell-intune-samples/
-##
-## You must specify two variables:
-## 1. The full path to the JSON file for import under the $JSON varaible
-## e.g. C:\Intune\Enrollment-restrictions.json
-## 2. The admin user account who can authenticate to perform the import
-## e.g. intuneadmin@itpromentor.com
-## 
+﻿<#
+      This is slightly modified from Microsoft Graph scripts located at:
+      https://github.com/microsoftgraph/powershell-intune-samples/
 
+      You must specify two variables:
+      1. The full path to the JSON file for import under the $JSON varaible
+      e.g. C:\Intune\Enrollment-restrictions.json
+      2. The admin user account who can authenticate to perform the import
+      e.g. intuneadmin@itpromentor.com
+
+      Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+      See LICENSE in the project root for license information.
+#> 
+[CmdletBinding()]
 
 Param (
-    $User
+   $User
 )
 
-<#
-.COPYRIGHT
-Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
-See LICENSE in the project root for license information.
-#>
+function Get-AuthToken 
+{
+   <#
+         .SYNOPSIS
+         This function is used to authenticate with the Graph API REST interface
 
-####################################################
+         .DESCRIPTION
+         The function authenticate with the Graph API Interface with the tenant name
 
-function Get-AuthToken {
+         .EXAMPLE
+         Get-AuthToken
+         Authenticates you with the Graph API interface
 
-<#
-.SYNOPSIS
-This function is used to authenticate with the Graph API REST interface
-.DESCRIPTION
-The function authenticate with the Graph API Interface with the tenant name
-.EXAMPLE
-Get-AuthToken
-Authenticates you with the Graph API interface
-.NOTES
-NAME: Get-AuthToken
-#>
+         .NOTES
+         NAME: Get-AuthToken
+   #>
+   [cmdletbinding()]
 
-[cmdletbinding()]
+   param
+   (
+      [Parameter(Mandatory,HelpMessage = 'Add help message for user')]
+      $User
+   )
 
-param
-(
-    [Parameter(Mandatory=$true)]
-    $User
-)
+   $userUpn = New-Object -TypeName 'System.Net.Mail.MailAddress' -ArgumentList $User
+   $tenant = $userUpn.Host
 
-$userUpn = New-Object "System.Net.Mail.MailAddress" -ArgumentList $User
+   Write-Host -Object 'Checking for AzureAD module...'
 
-$tenant = $userUpn.Host
+   $AadModule = Get-Module -Name 'AzureAD' -ListAvailable
 
-Write-Host "Checking for AzureAD module..."
+   if ($AadModule -eq $null) 
+   {
+      Write-Host -Object 'AzureAD PowerShell module not found, looking for AzureADPreview'
 
-    $AadModule = Get-Module -Name "AzureAD" -ListAvailable
+      $AadModule = Get-Module -Name 'AzureADPreview' -ListAvailable
+   }
 
-    if ($AadModule -eq $null) {
+   if ($AadModule -eq $null) 
+   {
+      Write-Host
+      Write-Host -Object 'AzureAD Powershell module not installed...' -ForegroundColor Red
+      Write-Host -Object "Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt" -ForegroundColor Yellow
+      Write-Host -Object "Script can't continue..." -ForegroundColor Red
+      Write-Host
 
-        Write-Host "AzureAD PowerShell module not found, looking for AzureADPreview"
-        $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
+      exit
+   }
 
-    }
+   # Getting path to ActiveDirectory Assemblies
+   # If the module count is greater than 1 find the latest version
+   if($AadModule.count -gt 1)
+   {
+      $Latest_Version = ($AadModule | Select-Object -Property version | Sort-Object)[-1]
+      $AadModule = $AadModule | Where-Object -FilterScript {
+         $_.version -eq $Latest_Version.version 
+      }
 
-    if ($AadModule -eq $null) {
-        write-host
-        write-host "AzureAD Powershell module not installed..." -f Red
-        write-host "Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt" -f Yellow
-        write-host "Script can't continue..." -f Red
-        write-host
-        exit
-    }
+      # Checking if there are multiple versions of the same module found
+      if($AadModule.count -gt 1)
+      {
+         $AadModule = $AadModule | Select-Object -Unique
+      }
 
-# Getting path to ActiveDirectory Assemblies
-# If the module count is greater than 1 find the latest version
+      $adal = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.dll'
+      $adalforms = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll'
+   }
+   else 
+   {
+      $adal = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.dll'
+      $adalforms = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll'
+   }
 
-    if($AadModule.count -gt 1){
+   $null = [Reflection.Assembly]::LoadFrom($adal)
+   $null = [Reflection.Assembly]::LoadFrom($adalforms)
+   $clientId = 'd1ddf0e4-d672-4dae-b554-9d5bdfd93547'
+   $redirectUri = 'urn:ietf:wg:oauth:2.0:oob'
+   $resourceAppIdURI = 'https://graph.microsoft.com'
+   $authority = "https://login.microsoftonline.com/$tenant"
 
-        $Latest_Version = ($AadModule | select version | Sort-Object)[-1]
+   try 
+   {
+      $authContext = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext' -ArgumentList $authority
 
-        $aadModule = $AadModule | ? { $_.version -eq $Latest_Version.version }
+      # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
+      # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
+      $platformParameters = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters' -ArgumentList 'Auto'
+      $userId = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier' -ArgumentList ($User, 'OptionalDisplayableId')
+      $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI,$clientId,$redirectUri,$platformParameters,$userId).Result
 
-            # Checking if there are multiple versions of the same module found
+      # If the accesstoken is valid then create the authentication header
+      if($authResult.AccessToken)
+      {
+         # Creating header for Authorization token
+         $authHeader = @{
+            'Content-Type' = 'application/json'
+            'Authorization' = 'Bearer ' + $authResult.AccessToken
+            'ExpiresOn'   = $authResult.ExpiresOn
+         }
 
-            if($AadModule.count -gt 1){
+         return $authHeader
+      }
+      else 
+      {
+         Write-Host
+         Write-Host -Object 'Authorization Access Token is null, please re-run authentication...' -ForegroundColor Red
+         Write-Host
 
-            $aadModule = $AadModule | select -Unique
+         break
+      }
+   }
+   catch 
+   {
+      Write-Host -Object $_.Exception.Message -ForegroundColor Red
+      Write-Host -Object $_.Exception.ItemName -ForegroundColor Red
+      Write-Host
 
-            }
-
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-    else {
-
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-[System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
-
-[System.Reflection.Assembly]::LoadFrom($adalforms) | Out-Null
-
-$clientId = "d1ddf0e4-d672-4dae-b554-9d5bdfd93547"
-
-$redirectUri = "urn:ietf:wg:oauth:2.0:oob"
-
-$resourceAppIdURI = "https://graph.microsoft.com"
-
-$authority = "https://login.microsoftonline.com/$Tenant"
-
-    try {
-
-    $authContext = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext" -ArgumentList $authority
-
-    # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
-    # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
-
-    $platformParameters = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters" -ArgumentList "Auto"
-
-    $userId = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier" -ArgumentList ($User, "OptionalDisplayableId")
-
-    $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI,$clientId,$redirectUri,$platformParameters,$userId).Result
-
-        # If the accesstoken is valid then create the authentication header
-
-        if($authResult.AccessToken){
-
-        # Creating header for Authorization token
-
-        $authHeader = @{
-            'Content-Type'='application/json'
-            'Authorization'="Bearer " + $authResult.AccessToken
-            'ExpiresOn'=$authResult.ExpiresOn
-            }
-
-        return $authHeader
-
-        }
-
-        else {
-
-        Write-Host
-        Write-Host "Authorization Access Token is null, please re-run authentication..." -ForegroundColor Red
-        Write-Host
-        break
-
-        }
-
-    }
-
-    catch {
-
-    write-host $_.Exception.Message -f Red
-    write-host $_.Exception.ItemName -f Red
-    write-host
-    break
-
-    }
-
+      break
+   }
 }
 
-####################################################
+Function Get-DeviceEnrollmentConfigurations()
+{
+   <#
+         .SYNOPSIS
+         This function is used to get Deivce Enrollment Configurations from the Graph API REST interface
 
-Function Get-DeviceEnrollmentConfigurations(){
+         .DESCRIPTION
+         The function connects to the Graph API Interface and gets Device Enrollment Configurations
+
+         .EXAMPLE
+         Get-DeviceEnrollmentConfigurations
+         Returns Device Enrollment Configurations configured in Intune
+
+         .NOTES
+         NAME: Get-DeviceEnrollmentConfigurations
+   #>
+   [cmdletbinding()]
     
-<#
-.SYNOPSIS
-This function is used to get Deivce Enrollment Configurations from the Graph API REST interface
-.DESCRIPTION
-The function connects to the Graph API Interface and gets Device Enrollment Configurations
-.EXAMPLE
-Get-DeviceEnrollmentConfigurations
-Returns Device Enrollment Configurations configured in Intune
-.NOTES
-NAME: Get-DeviceEnrollmentConfigurations
-#>
-    
-[cmdletbinding()]
-    
-$graphApiVersion = "Beta"
-$Resource = "deviceManagement/deviceEnrollmentConfigurations"
+   $graphApiVersion = 'Beta'
+   $Resource = 'deviceManagement/deviceEnrollmentConfigurations'
         
-    try {
-            
-    $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-    (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value
-    
-    }
-        
-    catch {
-    
-    $ex = $_.Exception
-    $errorResponse = $ex.Response.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($errorResponse)
-    $reader.BaseStream.Position = 0
-    $reader.DiscardBufferedData()
-    $responseBody = $reader.ReadToEnd();
-    Write-Host "Response content:`n$responseBody" -f Red
-    Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
-    write-host
-    break
-    
-    }
-    
+   try 
+   {
+      $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+      (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value
+   }
+   catch 
+   {
+      $ex = $_.Exception
+      $errorResponse = $ex.Response.GetResponseStream()
+      $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList ($errorResponse)
+      $reader.BaseStream.Position = 0
+      $reader.DiscardBufferedData()
+      $responseBody = $reader.ReadToEnd()
+      Write-Host -Object "Response content:`n$responseBody" -ForegroundColor Red
+      Write-Error -Message "Request to $uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
+      Write-Host
+
+      break
+   }
 }
 
-####################################################
+Function Set-DeviceEnrollmentConfiguration()
+{
+   <#
+         .SYNOPSIS
+         This function is used to set the Device Enrollment Configuration resource using the Graph API REST interface
+
+         .DESCRIPTION
+         The function connects to the Graph API Interface and sets the Device Enrollment Configuration Resource
+
+         .EXAMPLE
+         Set-DeviceEnrollmentConfiguration -DEC_Id $DEC_Id -JSON $JSON
+         Sets the Device Enrollment Configuration using Graph API
+
+         .NOTES
+         NAME: Set-DeviceEnrollmentConfiguration
+   #>
+   [cmdletbinding()]
     
-Function Set-DeviceEnrollmentConfiguration(){
+   param
+   (
+      $JSON,
+      $DEC_Id
+   )
     
-<#
-.SYNOPSIS
-This function is used to set the Device Enrollment Configuration resource using the Graph API REST interface
-.DESCRIPTION
-The function connects to the Graph API Interface and sets the Device Enrollment Configuration Resource
-.EXAMPLE
-Set-DeviceEnrollmentConfiguration -DEC_Id $DEC_Id -JSON $JSON
-Sets the Device Enrollment Configuration using Graph API
-.NOTES
-NAME: Set-DeviceEnrollmentConfiguration
-#>
-    
-[cmdletbinding()]
-    
-param
-(
-    $JSON,
-    $DEC_Id
-)
-    
-$graphApiVersion = "Beta"
-$App_resource = "deviceManagement/deviceEnrollmentConfigurations"
+   $graphApiVersion = 'Beta'
+   $App_resource = 'deviceManagement/deviceEnrollmentConfigurations'
         
-    try {
-    
-        if(!$JSON){
-    
-        write-host "No JSON was passed to the function, provide a JSON variable" -f Red
-        break
-    
-        }
-    
-        elseif(!$DEC_Id){
-    
-        write-host "No Device Enrollment Configuration ID was passed to the function, provide a Device Enrollment Configuration ID" -f Red
-        break
-    
-        }
-    
-        else {
-    
-        Test-JSON -JSON $JSON
-        
-        $uri = "https://graph.microsoft.com/$graphApiVersion/$($App_resource)/$DEC_Id"
-        Invoke-RestMethod -Uri $uri -Method Patch -ContentType "application/json" -Body $JSON -Headers $authToken
-    
-        }
-        
-    }
-        
-    catch {
-    
-    $ex = $_.Exception
-    $errorResponse = $ex.Response.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($errorResponse)
-    $reader.BaseStream.Position = 0
-    $reader.DiscardBufferedData()
-    $responseBody = $reader.ReadToEnd();
-    Write-Host "Response content:`n$responseBody" -f Red
-    Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
-    write-host
-    break
-    
-    }
-    
+   try 
+   {
+      if(!$JSON)
+      {
+         Write-Host -Object 'No JSON was passed to the function, provide a JSON variable' -ForegroundColor Red
+
+         break
+      }
+      elseif(!$DEC_Id)
+      {
+         Write-Host -Object 'No Device Enrollment Configuration ID was passed to the function, provide a Device Enrollment Configuration ID' -ForegroundColor Red
+
+         break
+      }
+      else 
+      {
+         Test-JSON -JSON $JSON
+         $uri = "https://graph.microsoft.com/$graphApiVersion/$($App_resource)/$DEC_Id"
+         Invoke-RestMethod -Uri $uri -Method Patch -ContentType 'application/json' -Body $JSON -Headers $authToken
+      }
+   }
+   catch 
+   {
+      $ex = $_.Exception
+      $errorResponse = $ex.Response.GetResponseStream()
+      $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList ($errorResponse)
+      $reader.BaseStream.Position = 0
+      $reader.DiscardBufferedData()
+      $responseBody = $reader.ReadToEnd()
+      Write-Host -Object "Response content:`n$responseBody" -ForegroundColor Red
+      Write-Error -Message "Request to $uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
+      Write-Host
+
+      break
+   }
 }
 
-####################################################
+Function Test-JSON()
+{
+   <#
+         .SYNOPSIS
+         This function is used to test if the JSON passed to a REST Post request is valid
 
-Function Test-JSON(){
+         .DESCRIPTION
+         The function tests if the JSON passed to the REST Post is valid
 
-<#
-.SYNOPSIS
-This function is used to test if the JSON passed to a REST Post request is valid
-.DESCRIPTION
-The function tests if the JSON passed to the REST Post is valid
-.EXAMPLE
-Test-JSON -JSON $JSON
-Test if the JSON is valid before calling the Graph REST interface
-.NOTES
-NAME: Test-AuthHeader
-#>
+         .EXAMPLE
+         Test-JSON -JSON $JSON
+         Test if the JSON is valid before calling the Graph REST interface
 
-param (
+         .NOTES
+         NAME: Test-AuthHeader
+   #>
+   [CmdletBinding()]
+   param (
+      $JSON
+   )
 
-$JSON
+   try 
+   {
+      $TestJSON = ConvertFrom-Json -InputObject $JSON -ErrorAction Stop
+      $validJson = $true
+   }
+   catch 
+   {
+      $validJson = $false
+      $_.Exception
+   }
 
-)
+   if (!$validJson)
+   {
+      Write-Host -Object "Provided JSON isn't in valid JSON format" -ForegroundColor Red
 
-    try {
-
-    $TestJSON = ConvertFrom-Json $JSON -ErrorAction Stop
-    $validJson = $true
-
-    }
-
-    catch {
-
-    $validJson = $false
-    $_.Exception
-
-    }
-
-    if (!$validJson){
-
-    Write-Host "Provided JSON isn't in valid JSON format" -f Red
-    break
-
-    }
-
+      break
+   }
 }
-
-####################################################
-
 #region Authentication
 
-write-host
+Write-Host
 
 # Checking if authToken exists before running authentication
-if($global:authToken){
+if($global:authToken)
+{
+   # Setting DateTime to Universal time to work in all timezones
+   $DateTime = (Get-Date).ToUniversalTime()
 
-    # Setting DateTime to Universal time to work in all timezones
-    $DateTime = (Get-Date).ToUniversalTime()
+   # If the authToken exists checking when it expires
+   $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
 
-    # If the authToken exists checking when it expires
-    $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
+   if($TokenExpires -le 0)
+   {
+      Write-Host 'Authentication Token expired' $TokenExpires 'minutes ago' -ForegroundColor Yellow
+      Write-Host
 
-        if($TokenExpires -le 0){
+      # Defining User Principal Name if not present
+      if($User -eq $null -or $User -eq '')
+      {
+         $User = Read-Host -Prompt 'Please specify your user principal name for Azure Authentication'
+         Write-Host
+      }
 
-        write-host "Authentication Token expired" $TokenExpires "minutes ago" -ForegroundColor Yellow
-        write-host
-
-            # Defining User Principal Name if not present
-
-            if($User -eq $null -or $User -eq ""){
-
-            $User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-            Write-Host
-
-            }
-
-        $global:authToken = Get-AuthToken -User $User
-
-        }
+      $global:authToken = Get-AuthToken -User $User
+   }
 }
+else
+{
+   # Authentication doesn't exist, calling Get-AuthToken function
+   if($User -eq $null -or $User -eq '')
+   {
+      $User = Read-Host -Prompt 'Please specify your user principal name for Azure Authentication'
+      Write-Host
+   }
 
-# Authentication doesn't exist, calling Get-AuthToken function
-
-else {
-
-    if($User -eq $null -or $User -eq ""){
-
-    $User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-    Write-Host
-
-    }
-
-# Getting the authorization token
-$global:authToken = Get-AuthToken -User $User
-
+   # Getting the authorization token
+   $global:authToken = Get-AuthToken -User $User
 }
-
 #endregion
 
-####################################################
-
-$JSON = @"
+$JSON = @'
 {
     "@odata.type":"#microsoft.graph.deviceEnrollmentPlatformRestrictionsConfiguration",
     "displayName":"All Users",
@@ -417,12 +367,10 @@ $JSON = @"
     "osMaximumVersion":""
     }
 }
-"@
-
-####################################################
+'@
 
 $DeviceEnrollmentConfigurations = Get-DeviceEnrollmentConfigurations
-
-$PlatformRestrictions = ($DeviceEnrollmentConfigurations | Where-Object { ($_.id).contains("DefaultPlatformRestrictions") }).id
-
+$PlatformRestrictions = ($DeviceEnrollmentConfigurations | Where-Object -FilterScript {
+      ($_.id).contains('DefaultPlatformRestrictions') 
+}).id
 Set-DeviceEnrollmentConfiguration -DEC_Id $PlatformRestrictions -JSON $JSON

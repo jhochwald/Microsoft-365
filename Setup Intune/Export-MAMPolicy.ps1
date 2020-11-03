@@ -1,518 +1,442 @@
 ﻿<#
-.COPYRIGHT
-Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
-See LICENSE in the project root for license information.
+      .COPYRIGHT
+      Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+      See LICENSE in the project root for license information.
 #>
 
 ####################################################
 
-function Get-AuthToken {
+function Get-AuthToken 
+{
+   <#
+         .SYNOPSIS
+         This function is used to authenticate with the Graph API REST interface
 
-<#
-.SYNOPSIS
-This function is used to authenticate with the Graph API REST interface
-.DESCRIPTION
-The function authenticate with the Graph API Interface with the tenant name
-.EXAMPLE
-Get-AuthToken
-Authenticates you with the Graph API interface
-.NOTES
-NAME: Get-AuthToken
-#>
+         .DESCRIPTION
+         The function authenticate with the Graph API Interface with the tenant name
 
-[cmdletbinding()]
+         .EXAMPLE
+         Get-AuthToken
+         Authenticates you with the Graph API interface
 
-param
-(
-    [Parameter(Mandatory=$true)]
-    $User
-)
+         .NOTES
+         NAME: Get-AuthToken
+   #>
+   [cmdletbinding()]
 
-$userUpn = New-Object "System.Net.Mail.MailAddress" -ArgumentList $User
+   param
+   (
+      [Parameter(Mandatory,HelpMessage = 'Add help message for user')]
+      $User
+   )
 
-$tenant = $userUpn.Host
+   $userUpn = New-Object -TypeName 'System.Net.Mail.MailAddress' -ArgumentList $User
+   $tenant = $userUpn.Host
 
-Write-Host "Checking for AzureAD module..."
+   Write-Host -Object 'Checking for AzureAD module...'
 
-    $AadModule = Get-Module -Name "AzureAD" -ListAvailable
+   $AadModule = Get-Module -Name 'AzureAD' -ListAvailable
 
-    if ($AadModule -eq $null) {
+   if ($AadModule -eq $null) 
+   {
+      Write-Host -Object 'AzureAD PowerShell module not found, looking for AzureADPreview'
+      $AadModule = Get-Module -Name 'AzureADPreview' -ListAvailable
+   }
 
-        Write-Host "AzureAD PowerShell module not found, looking for AzureADPreview"
-        $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
+   if ($AadModule -eq $null) 
+   {
+      Write-Host
+      Write-Host -Object 'AzureAD Powershell module not installed...' -ForegroundColor Red
+      Write-Host -Object "Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt" -ForegroundColor Yellow
+      Write-Host -Object "Script can't continue..." -ForegroundColor Red
+      Write-Host
 
-    }
+      exit
+   }
 
-    if ($AadModule -eq $null) {
-        write-host
-        write-host "AzureAD Powershell module not installed..." -f Red
-        write-host "Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt" -f Yellow
-        write-host "Script can't continue..." -f Red
-        write-host
-        exit
-    }
+   # Getting path to ActiveDirectory Assemblies
+   # If the module count is greater than 1 find the latest version
+   if($AadModule.count -gt 1)
+   {
+      $Latest_Version = ($AadModule | Select-Object -Property version | Sort-Object)[-1]
+      $AadModule = $AadModule | Where-Object -FilterScript {
+         $_.version -eq $Latest_Version.version 
+      }
 
-# Getting path to ActiveDirectory Assemblies
-# If the module count is greater than 1 find the latest version
+      # Checking if there are multiple versions of the same module found
+      if($AadModule.count -gt 1)
+      {
+         $AadModule = $AadModule | Select-Object -Unique
+      }
 
-    if($AadModule.count -gt 1){
+      $adal = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.dll'
+      $adalforms = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll'
+   }
+   else 
+   {
+      $adal = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.dll'
+      $adalforms = Join-Path -Path $AadModule.ModuleBase -ChildPath 'Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll'
+   }
 
-        $Latest_Version = ($AadModule | select version | Sort-Object)[-1]
+   $null = [Reflection.Assembly]::LoadFrom($adal)
+   $null = [Reflection.Assembly]::LoadFrom($adalforms)
+   $clientId = 'd1ddf0e4-d672-4dae-b554-9d5bdfd93547'
+   $redirectUri = 'urn:ietf:wg:oauth:2.0:oob'
+   $resourceAppIdURI = 'https://graph.microsoft.com'
+   $authority = "https://login.microsoftonline.com/$tenant"
 
-        $aadModule = $AadModule | ? { $_.version -eq $Latest_Version.version }
+   try 
+   {
+      $authContext = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext' -ArgumentList $authority
 
-            # Checking if there are multiple versions of the same module found
+      # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
+      # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
+      $platformParameters = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters' -ArgumentList 'Auto'
+      $userId = New-Object -TypeName 'Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier' -ArgumentList ($User, 'OptionalDisplayableId')
+      $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI,$clientId,$redirectUri,$platformParameters,$userId).Result
 
-            if($AadModule.count -gt 1){
+      # If the accesstoken is valid then create the authentication header
+      if($authResult.AccessToken)
+      {
+         # Creating header for Authorization token
+         $authHeader = @{
+            'Content-Type' = 'application/json'
+            'Authorization' = 'Bearer ' + $authResult.AccessToken
+            'ExpiresOn'   = $authResult.ExpiresOn
+         }
 
-            $aadModule = $AadModule | select -Unique
+         return $authHeader
+      }
+      else 
+      {
+         Write-Host
+         Write-Host -Object 'Authorization Access Token is null, please re-run authentication...' -ForegroundColor Red
+         Write-Host
 
-            }
+         break
+      }
+   }
+   catch 
+   {
+      Write-Host -Object $_.Exception.Message -ForegroundColor Red
+      Write-Host -Object $_.Exception.ItemName -ForegroundColor Red
+      Write-Host
 
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-    else {
-
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-[System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
-
-[System.Reflection.Assembly]::LoadFrom($adalforms) | Out-Null
-
-$clientId = "d1ddf0e4-d672-4dae-b554-9d5bdfd93547"
-
-$redirectUri = "urn:ietf:wg:oauth:2.0:oob"
-
-$resourceAppIdURI = "https://graph.microsoft.com"
-
-$authority = "https://login.microsoftonline.com/$Tenant"
-
-    try {
-
-    $authContext = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext" -ArgumentList $authority
-
-    # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
-    # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
-
-    $platformParameters = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters" -ArgumentList "Auto"
-
-    $userId = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier" -ArgumentList ($User, "OptionalDisplayableId")
-
-    $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI,$clientId,$redirectUri,$platformParameters,$userId).Result
-
-        # If the accesstoken is valid then create the authentication header
-
-        if($authResult.AccessToken){
-
-        # Creating header for Authorization token
-
-        $authHeader = @{
-            'Content-Type'='application/json'
-            'Authorization'="Bearer " + $authResult.AccessToken
-            'ExpiresOn'=$authResult.ExpiresOn
-            }
-
-        return $authHeader
-
-        }
-
-        else {
-
-        Write-Host
-        Write-Host "Authorization Access Token is null, please re-run authentication..." -ForegroundColor Red
-        Write-Host
-        break
-
-        }
-
-    }
-
-    catch {
-
-    write-host $_.Exception.Message -f Red
-    write-host $_.Exception.ItemName -f Red
-    write-host
-    break
-
-    }
-
+      break
+   }
 }
 
-####################################################
+Function Get-ManagedAppPolicy()
+{
+   <#
+         .SYNOPSIS
+         This function is used to get managed app policies from the Graph API REST interface
 
-Function Get-ManagedAppPolicy(){
+         .DESCRIPTION
+         The function connects to the Graph API Interface and gets any managed app policies
 
-<#
-.SYNOPSIS
-This function is used to get managed app policies from the Graph API REST interface
-.DESCRIPTION
-The function connects to the Graph API Interface and gets any managed app policies
-.EXAMPLE
-Get-ManagedAppPolicy
-Returns any managed app policies configured in Intune
-.NOTES
-NAME: Get-ManagedAppPolicy
-#>
+         .EXAMPLE
+         Get-ManagedAppPolicy
+         Returns any managed app policies configured in Intune
 
-[cmdletbinding()]
+         .NOTES
+         NAME: Get-ManagedAppPolicy
+   #>
+   [cmdletbinding()]
 
-param
-(
-    $Name
-)
+   param
+   (
+      $Name
+   )
 
-$graphApiVersion = "Beta"
-$Resource = "deviceAppManagement/managedAppPolicies"
+   $graphApiVersion = 'Beta'
+   $Resource = 'deviceAppManagement/managedAppPolicies'
 
-    try {
-    
-        if($Name){
-    
-        $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-        (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object { ($_.'displayName').contains("$Name") }
-    
-        }
-    
-        else {
-    
-        $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-        (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object { ($_.'@odata.type').contains("ManagedAppProtection") -or ($_.'@odata.type').contains("InformationProtectionPolicy") }
-    
-        }
-    
-    }
-    
-    catch {
-    
-    $ex = $_.Exception
-    $errorResponse = $ex.Response.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($errorResponse)
-    $reader.BaseStream.Position = 0
-    $reader.DiscardBufferedData()
-    $responseBody = $reader.ReadToEnd();
-    Write-Host "Response content:`n$responseBody" -f Red
-    Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
-    write-host
-    break
-    
-    }
-    
+   try 
+   {
+      if($Name)
+      {
+         $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+         (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object -FilterScript {
+            ($_.'displayName').contains("$Name") 
+         }
+      }
+      else 
+      {
+         $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+         (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object -FilterScript {
+            ($_.'@odata.type').contains('ManagedAppProtection') -or ($_.'@odata.type').contains('InformationProtectionPolicy') 
+         }
+      }
+   }
+   catch 
+   {
+      $ex = $_.Exception
+      $errorResponse = $ex.Response.GetResponseStream()
+      $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList ($errorResponse)
+      $reader.BaseStream.Position = 0
+      $reader.DiscardBufferedData()
+      $responseBody = $reader.ReadToEnd()
+      Write-Host -Object "Response content:`n$responseBody" -ForegroundColor Red
+      Write-Error -Message "Request to $uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
+      Write-Host
+
+      break
+   }
 }
 
-####################################################
+Function Get-ManagedAppProtection()
+{
+   <#
+         .SYNOPSIS
+         This function is used to get managed app protection configuration from the Graph API REST interface
 
-Function Get-ManagedAppProtection(){
+         .DESCRIPTION
+         The function connects to the Graph API Interface and gets any managed app protection policy
 
-<#
-.SYNOPSIS
-This function is used to get managed app protection configuration from the Graph API REST interface
-.DESCRIPTION
-The function connects to the Graph API Interface and gets any managed app protection policy
-.EXAMPLE
-Get-ManagedAppProtection -id $id -OS "Android"
-Returns a managed app protection policy for Android configured in Intune
-Get-ManagedAppProtection -id $id -OS "iOS"
-Returns a managed app protection policy for iOS configured in Intune
-Get-ManagedAppProtection -id $id -OS "WIP_WE"
-Returns a managed app protection policy for Windows 10 without enrollment configured in Intune
-.NOTES
-NAME: Get-ManagedAppProtection
-#>
+         .EXAMPLE
+         Get-ManagedAppProtection -id $id -OS "Android"
+         Returns a managed app protection policy for Android configured in Intune
+         Get-ManagedAppProtection -id $id -OS "iOS"
+         Returns a managed app protection policy for iOS configured in Intune
+         Get-ManagedAppProtection -id $id -OS "WIP_WE"
+         Returns a managed app protection policy for Windows 10 without enrollment configured in Intune
 
-[cmdletbinding()]
+         .NOTES
+         NAME: Get-ManagedAppProtection
+   #>
+   [cmdletbinding()]
 
-param
-(
-    [Parameter(Mandatory=$true)]
-    $id,
-    [Parameter(Mandatory=$true)]
-    [ValidateSet("Android","iOS","WIP_WE","WIP_MDM")]
-    $OS    
-)
+   param
+   (
+      [Parameter(Mandatory,HelpMessage = 'Add help message for user')]
+      $id,
+      [Parameter(Mandatory,HelpMessage = 'Add help message for user')]
+      [ValidateSet('Android','iOS','WIP_WE','WIP_MDM')]
+      $OS    
+   )
 
-$graphApiVersion = "Beta"
+   $graphApiVersion = 'Beta'
 
-    try {
-    
-        if($id -eq "" -or $id -eq $null){
-    
-        write-host "No Managed App Policy id specified, please provide a policy id..." -f Red
-        break
-    
-        }
-    
-        else {
-    
-            if($OS -eq "" -or $OS -eq $null){
-    
-            write-host "No OS parameter specified, please provide an OS. Supported value are Android,iOS,WIP_WE,WIP_MDM..." -f Red
+   try 
+   {
+      if($id -eq '' -or $id -eq $null)
+      {
+         Write-Host -Object 'No Managed App Policy id specified, please provide a policy id...' -ForegroundColor Red
+
+         break
+      }
+      else 
+      {
+         if($OS -eq '' -or $OS -eq $null)
+         {
+            Write-Host -Object 'No OS parameter specified, please provide an OS. Supported value are Android,iOS,WIP_WE,WIP_MDM...' -ForegroundColor Red
             Write-Host
+
             break
-    
-            }
-    
-            elseif($OS -eq "Android"){
-    
+         }
+         elseif($OS -eq 'Android')
+         {
             $Resource = "deviceAppManagement/androidManagedAppProtections('$id')/?`$expand=apps"
-    
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
             Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-    
-            }
-    
-            elseif($OS -eq "iOS"){
-    
+         }
+         elseif($OS -eq 'iOS')
+         {
             $Resource = "deviceAppManagement/iosManagedAppProtections('$id')/?`$expand=apps"
-    
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
             Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-    
-            }
-
-            elseif($OS -eq "WIP_WE"){
-    
+         }
+         elseif($OS -eq 'WIP_WE')
+         {
             $Resource = "deviceAppManagement/windowsInformationProtectionPolicies('$id')?`$expand=protectedAppLockerFiles,exemptAppLockerFiles,assignments"
-    
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
             Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-    
-            }
-
-            elseif($OS -eq "WIP_MDM"){
-    
+         }
+         elseif($OS -eq 'WIP_MDM')
+         {
             $Resource = "deviceAppManagement/mdmWindowsInformationProtectionPolicies('$id')?`$expand=protectedAppLockerFiles,exemptAppLockerFiles,assignments"
-    
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
             Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
+         }
+      }
+   }
+   catch 
+   {
+      $ex = $_.Exception
+      $errorResponse = $ex.Response.GetResponseStream()
+      $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList ($errorResponse)
+      $reader.BaseStream.Position = 0
+      $reader.DiscardBufferedData()
+      $responseBody = $reader.ReadToEnd()
+      Write-Host -Object "Response content:`n$responseBody" -ForegroundColor Red
+      Write-Error -Message "Request to $uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
+      Write-Host
 
-            }
-    
-        }
-    
-    }
-
-    catch {
-    
-    $ex = $_.Exception
-    $errorResponse = $ex.Response.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($errorResponse)
-    $reader.BaseStream.Position = 0
-    $reader.DiscardBufferedData()
-    $responseBody = $reader.ReadToEnd();
-    Write-Host "Response content:`n$responseBody" -f Red
-    Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
-    write-host
-    break
-    
-    }
-
+      break
+   }
 }
 
-####################################################
+Function Export-JSONData()
+{
+   <#
+         .SYNOPSIS
+         This function is used to export JSON data returned from Graph
 
-Function Export-JSONData(){
+         .DESCRIPTION
+         This function is used to export JSON data returned from Graph
 
-<#
-.SYNOPSIS
-This function is used to export JSON data returned from Graph
-.DESCRIPTION
-This function is used to export JSON data returned from Graph
-.EXAMPLE
-Export-JSONData -JSON $JSON
-Export the JSON inputted on the function
-.NOTES
-NAME: Export-JSONData
-#>
+         .EXAMPLE
+         Export-JSONData -JSON $JSON
+         Export the JSON inputted on the function
 
-param (
+         .NOTES
+         NAME: Export-JSONData
+   #>
+   [CmdletBinding()]
+   param (
+      $JSON,
+      $ExportPath
+   )
 
-$JSON,
-$ExportPath
+   try 
+   {
+      if($JSON -eq '' -or $JSON -eq $null)
+      {
+         Write-Host -Object 'No JSON specified, please specify valid JSON...' -ForegroundColor Red
+      }
+      elseif(!$ExportPath)
+      {
+         Write-Host -Object 'No export path parameter set, please provide a path to export the file' -ForegroundColor Red
+      }
+      elseif(!(Test-Path -Path $ExportPath))
+      {
+         Write-Host -Object "$ExportPath doesn't exist, can't export JSON Data" -ForegroundColor Red
+      }
+      else 
+      {
+         $JSON1 = ConvertTo-Json -InputObject $JSON -Depth 5
+         $JSON_Convert = $JSON1 | ConvertFrom-Json
+         $displayName = $JSON_Convert.displayName
 
-)
+         # Updating display name to follow file naming conventions - https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247%28v=vs.85%29.aspx
+         $displayName = $displayName -replace '\<|\>|:|"|/|\\|\||\?|\*', '_'
+         $Properties = ($JSON_Convert | Get-Member | Where-Object -FilterScript {
+               $_.MemberType -eq 'NoteProperty' 
+         }).Name
+         $FileName_JSON = "$displayName" + '_' + $(Get-Date -Format dd-MM-yyyy-H-mm-ss) + '.json'
 
-    try {
+         Write-Host 'Export Path:' "$ExportPath"
 
-        if($JSON -eq "" -or $JSON -eq $null){
+         $JSON1 | Set-Content -LiteralPath "$ExportPath\$FileName_JSON"
 
-        write-host "No JSON specified, please specify valid JSON..." -f Red
-
-        }
-
-        elseif(!$ExportPath){
-
-        write-host "No export path parameter set, please provide a path to export the file" -f Red
-
-        }
-
-        elseif(!(Test-Path $ExportPath)){
-
-        write-host "$ExportPath doesn't exist, can't export JSON Data" -f Red
-
-        }
-
-        else {
-
-        $JSON1 = ConvertTo-Json $JSON -Depth 5
-
-        $JSON_Convert = $JSON1 | ConvertFrom-Json
-
-        $displayName = $JSON_Convert.displayName
-
-        # Updating display name to follow file naming conventions - https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247%28v=vs.85%29.aspx
-        $DisplayName = $DisplayName -replace '\<|\>|:|"|/|\\|\||\?|\*', "_"
-
-        $Properties = ($JSON_Convert | Get-Member | ? { $_.MemberType -eq "NoteProperty" }).Name
-
-            $FileName_JSON = "$DisplayName" + "_" + $(get-date -f dd-MM-yyyy-H-mm-ss) + ".json"
-
-            write-host "Export Path:" "$ExportPath"
-
-            $JSON1 | Set-Content -LiteralPath "$ExportPath\$FileName_JSON"
-            write-host "JSON created in $ExportPath\$FileName_JSON..." -f cyan
-            
-        }
-
-    }
-
-    catch {
-
-    $_.Exception
-
-    }
-
+         Write-Host -Object "JSON created in $ExportPath\$FileName_JSON..." -ForegroundColor cyan
+      }
+   }
+   catch 
+   {
+      $_.Exception
+   }
 }
-
-####################################################
 
 #region Authentication
-
-write-host
+Write-Host
 
 # Checking if authToken exists before running authentication
-if($global:authToken){
+if($global:authToken)
+{
+   # Setting DateTime to Universal time to work in all timezones
+   $DateTime = (Get-Date).ToUniversalTime()
 
-    # Setting DateTime to Universal time to work in all timezones
-    $DateTime = (Get-Date).ToUniversalTime()
+   # If the authToken exists checking when it expires
+   $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
 
-    # If the authToken exists checking when it expires
-    $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
+   if($TokenExpires -le 0)
+   {
+      Write-Host 'Authentication Token expired' $TokenExpires 'minutes ago' -ForegroundColor Yellow
+      Write-Host
 
-        if($TokenExpires -le 0){
+      # Defining User Principal Name if not present
+      if($User -eq $null -or $User -eq '')
+      {
+         $User = Read-Host -Prompt 'Please specify your user principal name for Azure Authentication'
 
-        write-host "Authentication Token expired" $TokenExpires "minutes ago" -ForegroundColor Yellow
-        write-host
+         Write-Host
+      }
 
-            # Defining User Principal Name if not present
-
-            if($User -eq $null -or $User -eq ""){
-
-            $User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-            Write-Host
-
-            }
-
-        $global:authToken = Get-AuthToken -User $User
-
-        }
+      $global:authToken = Get-AuthToken -User $User
+   }
 }
+else 
+{
+   # Authentication doesn't exist, calling Get-AuthToken function
+   if($User -eq $null -or $User -eq '')
+   {
+      $User = Read-Host -Prompt 'Please specify your user principal name for Azure Authentication'
 
-# Authentication doesn't exist, calling Get-AuthToken function
+      Write-Host
+   }
 
-else {
-
-    if($User -eq $null -or $User -eq ""){
-
-    $User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-    Write-Host
-
-    }
-
-# Getting the authorization token
-$global:authToken = Get-AuthToken -User $User
-
+   # Getting the authorization token
+   $global:authToken = Get-AuthToken -User $User
 }
-
 #endregion
 
-####################################################
+$ExportPath = Read-Host -Prompt 'Please specify a path to export the policy data to e.g. C:\IntuneOutput'
 
-$ExportPath = Read-Host -Prompt "Please specify a path to export the policy data to e.g. C:\IntuneOutput"
+# If the directory path doesn't exist prompt user to create the directory
+if(!(Test-Path -Path "$ExportPath"))
+{
+   Write-Host
+   Write-Host -Object "Path '$ExportPath' doesn't exist, do you want to create this directory? Y or N?" -ForegroundColor Yellow
 
-    # If the directory path doesn't exist prompt user to create the directory
+   $Confirm = Read-Host
 
-    if(!(Test-Path "$ExportPath")){
+   if($Confirm -eq 'y' -or $Confirm -eq 'Y')
+   {
+      $null = New-Item -ItemType Directory -Path "$ExportPath"
 
-    Write-Host
-    Write-Host "Path '$ExportPath' doesn't exist, do you want to create this directory? Y or N?" -ForegroundColor Yellow
+      Write-Host
+   }
+   else 
+   {
+      Write-Host -Object 'Creation of directory path was cancelled...' -ForegroundColor Red
+      Write-Host
 
-    $Confirm = read-host
+      break
+   }
+}
 
-        if($Confirm -eq "y" -or $Confirm -eq "Y"){
+Write-Host
+Write-Host -Object 'Running query against Microsoft Graph for App Protection Policies' -ForegroundColor Yellow
 
-        new-item -ItemType Directory -Path "$ExportPath" | Out-Null
-        Write-Host
-
-        }
-
-        else {
-
-        Write-Host "Creation of directory path was cancelled..." -ForegroundColor Red
-        Write-Host
-        break
-
-        }
-
-    }
+$ManagedAppPolicies = Get-ManagedAppPolicy | Where-Object -FilterScript {
+   ($_.'@odata.type').contains('ManagedAppProtection') 
+}
 
 Write-Host
 
-####################################################
+if($ManagedAppPolicies)
+{
+   foreach($ManagedAppPolicy in $ManagedAppPolicies)
+   {
+      Write-Host 'Managed App Policy:'$ManagedAppPolicy.displayName -ForegroundColor Cyan
 
-write-host "Running query against Microsoft Graph for App Protection Policies" -f Yellow
+      if($ManagedAppPolicy.'@odata.type' -eq '#microsoft.graph.androidManagedAppProtection')
+      {
+         $AppProtectionPolicy = Get-ManagedAppProtection -id $ManagedAppPolicy.id -OS 'Android'
+         $AppProtectionPolicy | Add-Member -MemberType NoteProperty -Name '@odata.type' -Value '#microsoft.graph.androidManagedAppProtection'
+         $AppProtectionPolicy
+         Export-JSONData -JSON $AppProtectionPolicy -ExportPath "$ExportPath"
+      }
+      elseif($ManagedAppPolicy.'@odata.type' -eq '#microsoft.graph.iosManagedAppProtection')
+      {
+         $AppProtectionPolicy = Get-ManagedAppProtection -id $ManagedAppPolicy.id -OS 'iOS'
+         $AppProtectionPolicy | Add-Member -MemberType NoteProperty -Name '@odata.type' -Value '#microsoft.graph.iosManagedAppProtection'
+         $AppProtectionPolicy
+         Export-JSONData -JSON $AppProtectionPolicy -ExportPath "$ExportPath"
+      }
 
-$ManagedAppPolicies = Get-ManagedAppPolicy | ? { ($_.'@odata.type').contains("ManagedAppProtection") }
-
-write-host
-
-if($ManagedAppPolicies){
-
-    foreach($ManagedAppPolicy in $ManagedAppPolicies){
-
-    write-host "Managed App Policy:"$ManagedAppPolicy.displayName -f Cyan
-
-        if($ManagedAppPolicy.'@odata.type' -eq "#microsoft.graph.androidManagedAppProtection"){
-
-            $AppProtectionPolicy = Get-ManagedAppProtection -id $ManagedAppPolicy.id -OS "Android"
-
-            $AppProtectionPolicy | Add-Member -MemberType NoteProperty -Name '@odata.type' -Value "#microsoft.graph.androidManagedAppProtection"
-
-            $AppProtectionPolicy
-
-            Export-JSONData -JSON $AppProtectionPolicy -ExportPath "$ExportPath"
-
-        }
-
-        elseif($ManagedAppPolicy.'@odata.type' -eq "#microsoft.graph.iosManagedAppProtection"){
-
-            $AppProtectionPolicy = Get-ManagedAppProtection -id $ManagedAppPolicy.id -OS "iOS"
-
-            $AppProtectionPolicy | Add-Member -MemberType NoteProperty -Name '@odata.type' -Value "#microsoft.graph.iosManagedAppProtection"
-
-            $AppProtectionPolicy
-
-            Export-JSONData -JSON $AppProtectionPolicy -ExportPath "$ExportPath"
-
-        }
-
-    Write-Host
-
-    }
-
+      Write-Host
+   }
 }
